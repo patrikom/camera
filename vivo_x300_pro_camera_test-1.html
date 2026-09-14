@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#111">
+<title>Test kamer Vivo X300 Pro</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; background: #111; color: #eee; }
+  header { padding: 16px; position: sticky; top: 0; background: #111; z-index: 2; }
+  h1 { font-size: 20px; margin: 0 0 6px; }
+  .note { color: #bbb; font-size: 13px; line-height: 1.4; }
+  main { padding: 0 16px 24px; max-width: 800px; margin: auto; }
+  video { width: 100%; max-height: 55vh; background: #000; border-radius: 12px; object-fit: contain; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+  button, select, input[type=range] {
+    font: inherit;
+  }
+  button, select {
+    padding: 9px 11px; border-radius: 9px; border: 1px solid #555;
+    background: #222; color: #eee;
+  }
+  button:disabled { opacity: .45; }
+  .panel { background: #1b1b1b; border: 1px solid #333; border-radius: 12px; padding: 12px; margin-top: 12px; }
+  .kv { display: grid; grid-template-columns: 160px 1fr; gap: 6px 12px; font-size: 13px; }
+  .k { color: #aaa; }
+  code { word-break: break-all; }
+  .zoom { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; }
+  .zoom-value { min-width: 60px; text-align: right; font-weight: 700; }
+  .ok { color: #7ee787; }
+  .warn { color: #ffcc66; }
+  .bad { color: #ff7b72; }
+  pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; color: #ccc; margin: 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Test kamer — Vivo X300 Pro</h1>
+  <div class="note">Uruchom przez HTTPS albo localhost. Zezwól przeglądarce na kamerę.</div>
+</header>
+
+<main>
+  <div class="row">
+    <button id="start">Uruchom kamerę</button>
+    <button id="refresh">Odśwież listę kamer</button>
+  </div>
+
+  <div class="panel">
+    <label for="camera">Kamera:</label>
+    <select id="camera" style="width:100%; margin-top:8px;"></select>
+  </div>
+
+  <div class="panel">
+    <video id="video" autoplay playsinline muted></video>
+  </div>
+
+  <div class="panel">
+    <div class="zoom">
+      <input id="zoom" type="range" min="1" max="1" step="0.1" value="1" disabled>
+      <div class="zoom-value"><span id="zoomValue">1.0</span>×</div>
+    </div>
+    <div class="row">
+      <button data-z="1">1×</button>
+      <button data-z="2">2×</button>
+      <button data-z="3">3×</button>
+      <button data-z="5">5×</button>
+      <button data-z="7">7×</button>
+      <button data-z="10">10×</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h3 style="margin-top:0">Aktywna ścieżka</h3>
+    <div id="info" class="kv"></div>
+  </div>
+
+  <div class="panel">
+    <h3 style="margin-top:0">Capabilities</h3>
+    <pre id="caps">{}</pre>
+  </div>
+
+  <div class="panel">
+    <h3 style="margin-top:0">Wynik testu</h3>
+    <div id="result" class="note">Brak testu.</div>
+  </div>
+
+  <div class="panel">
+    <h3 style="margin-top:0">Log</h3>
+    <pre id="log"></pre>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let stream = null;
+let track = null;
+
+function log(msg) {
+  const t = new Date().toLocaleTimeString();
+  $("log").textContent = `[${t}] ${msg}\n` + $("log").textContent;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+
+async function listCameras() {
+  if (!navigator.mediaDevices?.enumerateDevices) {
+    log("enumerateDevices() nie jest dostępne.");
+    return;
+  }
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const cams = devices.filter(d => d.kind === "videoinput");
+    $("camera").innerHTML = "";
+    cams.forEach((d, i) => {
+      const o = document.createElement("option");
+      o.value = d.deviceId;
+      o.textContent = d.label || `Kamera ${i + 1}`;
+      $("camera").appendChild(o);
+    });
+    log(`Wykryto ${cams.length} urządzeń videoinput.`);
+    if (!cams.length) log("Nie znaleziono kamer. Najpierw udziel zgody na dostęp.");
+  } catch (e) {
+    log("Błąd enumerateDevices: " + e);
+  }
+}
+
+function val(x) {
+  return x === undefined || x === null ? "—" : x;
+}
+
+function updateInfo() {
+  if (!track) return;
+  const s = track.getSettings ? track.getSettings() : {};
+  const c = track.getCapabilities ? track.getCapabilities() : {};
+  const label = track.label || "—";
+
+  $("info").innerHTML = `
+    <div class="k">label</div><div>${escapeHtml(label)}</div>
+    <div class="k">deviceId</div><div><code>${escapeHtml(s.deviceId || "—")}</code></div>
+    <div class="k">facingMode</div><div>${escapeHtml(val(s.facingMode))}</div>
+    <div class="k">resolution</div><div>${val(s.width)} × ${val(s.height)}</div>
+    <div class="k">frameRate</div><div>${val(s.frameRate)}</div>
+    <div class="k">zoom</div><div>${val(s.zoom)} (capability: ${c.zoom ? `${c.zoom.min}–${c.zoom.max}, step ${c.zoom.step}` : "brak"})</div>
+  `;
+
+  $("caps").textContent = JSON.stringify(c, null, 2);
+
+  if (c.zoom) {
+    $("zoom").disabled = false;
+    $("zoom").min = c.zoom.min;
+    $("zoom").max = c.zoom.max;
+    $("zoom").step = c.zoom.step || 0.1;
+    $("zoom").value = s.zoom ?? Math.max(1, c.zoom.min);
+    $("zoomValue").textContent = Number($("zoom").value).toFixed(1);
+  } else {
+    $("zoom").disabled = true;
+    $("zoomValue").textContent = "—";
+  }
+}
+
+async function startCamera() {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    $("result").innerHTML = '<span class="bad">getUserMedia() niedostępne. Otwórz stronę przez HTTPS lub localhost.</span>';
+    return;
+  }
+
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  track = null;
+  $("video").srcObject = null;
+
+  const deviceId = $("camera").value;
+
+  const constraints = deviceId
+    ? { video: { deviceId: { exact: deviceId }, width: { ideal: 3840 }, height: { ideal: 2160 } }, audio: false }
+    : { video: { facingMode: { ideal: "environment" }, width: { ideal: 3840 }, height: { ideal: 2160 } }, audio: false };
+
+  try {
+    stream = await navigator.mediaDevices.getUserMedia(constraints);
+    $("video").srcObject = stream;
+    await $("video").play();
+    track = stream.getVideoTracks()[0];
+
+    log(`Aktywna kamera: ${track.label || "(bez nazwy)"}`);
+    updateInfo();
+
+    const c = track.getCapabilities();
+    if (c.zoom) {
+      $("result").innerHTML = `<span class="ok">Przeglądarka wystawia kontrolę zoomu.</span> Zakres: ${c.zoom.min}–${c.zoom.max}.`;
+    } else {
+      $("result").innerHTML = `<span class="warn">Brak capability "zoom".</span> Zmiana fizycznego obiektywu może nadal być sterowana wewnętrznie przez system, ale strona nie ma do tego dedykowanego API.`;
+    }
+
+    await listCameras();
+  } catch (e) {
+    log(`getUserMedia error: ${e.name}: ${e.message}`);
+    $("result").innerHTML = `<span class="bad">Nie udało się uruchomić kamery:</span> ${escapeHtml(e.message)}`;
+  }
+}
+
+async function setZoom(z) {
+  if (!track) {
+    $("result").innerHTML = '<span class="warn">Najpierw uruchom kamerę.</span>';
+    return;
+  }
+  const c = track.getCapabilities ? track.getCapabilities() : {};
+  if (!c.zoom) {
+    $("result").innerHTML = '<span class="warn">Ta kamera/przeglądarka nie udostępnia sterowania zoomem przez MediaStreamTrack.</span>';
+    return;
+  }
+
+  const target = Math.max(c.zoom.min, Math.min(c.zoom.max, z));
+  try {
+    await track.applyConstraints({ advanced: [{ zoom: target }] });
+    $("zoom").value = target;
+    $("zoomValue").textContent = Number(target).toFixed(1);
+    updateInfo();
+
+    $("result").innerHTML =
+      `<span class="ok">Ustawiono ${Number(target).toFixed(1)}×.</span> ` +
+      `Sprawdź obraz i rozdzielczość powyżej. Jeśli telefon przełącza fizyczny sensor, `;
+    $("result").innerHTML +=
+      `może zmienić się charakterystyka obrazu, ale sama strona nie potrafi wiarygodnie potwierdzić, który fizyczny obiektyw jest używany.`;
+    log(`Zoom ustawiony: ${target}`);
+  } catch (e) {
+    log(`Zoom ${target}× nieudany: ${e.name}: ${e.message}`);
+    $("result").innerHTML = `<span class="bad">Nie udało się ustawić ${target}×:</span> ${escapeHtml(e.message)}`;
+  }
+}
+
+$("start").addEventListener("click", startCamera);
+$("refresh").addEventListener("click", listCameras);
+$("zoom").addEventListener("input", e => setZoom(Number(e.target.value)));
+document.querySelectorAll("button[data-z]").forEach(b => {
+  b.addEventListener("click", () => setZoom(Number(b.dataset.z)));
+});
+
+if (navigator.mediaDevices?.addEventListener) {
+  navigator.mediaDevices.addEventListener("devicechange", listCameras);
+}
+
+listCameras();
+</script>
+</body>
+</html>
